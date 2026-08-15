@@ -42,7 +42,3 @@ Custom detection rules for monitoring the organization's break glass (emergency 
 ## Contributing
 
 New Modern Work-related KQL (Conditional Access, privileged role monitoring, Exchange Online, Teams, etc.) is welcome as new module folders following the same structure: a module README + individual `.kql` files.
-
-## License
-
-*(add your preferred license here, e.g. MIT)*
