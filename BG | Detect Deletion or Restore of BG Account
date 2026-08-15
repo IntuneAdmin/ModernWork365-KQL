@@ -1,49 +1,12 @@
-# Raw Event Lookup by Object ID (debug query)
-
-## Purpose
-
-This is a **debugging / discovery query**, not a detection rule. It's used to pull the raw, unparsed audit event data for a specific object (user, group, etc.) so you can inspect the actual JSON structure in `RawEventData` — e.g. to verify exact `ActionType` strings, find the right property names inside `ModifiedProperties`, or confirm which field actually holds the object's identity, before building or fixing a detection rule.
-
-## Query
-
-```kql
 CloudAppEvents
-| where Timestamp > ago(2h)
-| where RawEventData has "92d9c14e-e304-4974-bbd6-36bcb9024406"
-| project Timestamp, ActionType, AccountDisplayName, RawEventData
-```
-
-## Line-by-line explanation
-
-| Line | What it does |
-|------|--------------|
-| `CloudAppEvents` | Queries the `CloudAppEvents` table, which contains Microsoft 365 / Entra ID audit activity (sign-ins, directory changes, group changes, etc.) as ingested into Defender/Sentinel. |
-| `where Timestamp > ago(2h)` | Limits the search to the last 2 hours — keeps the query fast and scoped to a recent test event you just triggered. |
-| `where RawEventData has "92d9c14e-e304-4974-bbd6-36bcb9024406"` | Does a raw text search for the given GUID (`92d9c14e-e304-4974-bbd6-36bcb9024406`) anywhere inside the unparsed `RawEventData` string. This is intentionally "dumb" and unstructured — instead of assuming the GUID lives in a specific known field (like `AccountObjectId` or `ObjectId`), it just checks if the string appears *anywhere* in the raw JSON blob. Useful when you don't yet know which field an object's ID ends up in for a given `ActionType`. |
-| `project Timestamp, ActionType, AccountDisplayName, RawEventData` | Returns only the columns needed to inspect the event: when it happened, what kind of action it was, who performed it (display name), and the full raw JSON so you can expand it manually and look for the exact structure. |
-
-## When to use this
-
-- After triggering a test action (e.g. removing a group member, deleting a TAP, changing a password) on a specific object.
-- You know the object's **Object ID (GUID)** — this pattern is the recommended approach over UPN-based searches, since UPNs get prefixed with the Object ID on deletion and can otherwise mismatch.
-- You want to confirm:
-  - The exact `ActionType` string (including trailing periods, e.g. `"Update user."`).
-  - Which field actually holds the target object's identity (`ObjectId` inside `ParsedData` vs. the built-in `AccountObjectId`, which is often the *actor*, not the target).
-  - What property names appear inside `ModifiedProperties` (e.g. `"Included Updated Properties"`, `SecuredAccessPassData`, `Group.ObjectID`).
-
-## Typical next step
-
-Once you've confirmed the structure from the raw output, you `parse_json(RawEventData)` and extract the specific fields you need — this is the pattern used to build the finalized BG detection rules (e.g. Rules 3–5 in the Break Glass Monitoring module).
-
-```kql
-CloudAppEvents
-| where ActionType == "..."
-| extend ParsedData = parse_json(RawEventData)
-| extend AccountObjectId = tostring(ParsedData.ObjectId)
-| where AccountObjectId == "92d9c14e-e304-4974-bbd6-36bcb9024406"
-```
-
-## Notes / caveats
-
-- `RawEventData has "..."` is a substring match — it will also match if the GUID appears in an unrelated field (e.g. as an actor rather than a target), so treat results as a starting point for inspection, not as a final filter for a production rule.
-- `CloudAppEvents` ingestion typically lags 15–60 minutes behind the Entra ID audit log UI, so if a test event doesn't show up yet, check the portal audit log first before assuming the query is wrong.
+| where ActionType in ("Delete user.", "Hard delete user.", "Restore user.")
+| where RawEventData has_any ("<USER1-OBJECT-ID", "USER2-OBJECT-ID")
+| extend BreakGlassAccountId = case(
+    RawEventData has "USER1-OBJECT-ID", "USER1-OBJECT-ID",
+    RawEventData has "USER2-OBJECT-ID", "USER2-OBJECT-ID",
+    "")
+| project Timestamp, ReportId, ActionType,
+          ActorObjectId = AccountObjectId, 
+          ActorDisplayName = AccountDisplayName,
+          AccountObjectId = BreakGlassAccountId,
+          IPAddress, Application, RawEventData
